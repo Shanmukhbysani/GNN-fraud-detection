@@ -1,64 +1,77 @@
-# Customer Life Event Detection from Transactions using LLMs
+# Fraud Detection using GNN-Enhanced XGBoost with Explainable AI
 
-Detects customer **life events** — house move, new baby, new job, wedding — from raw transaction history using a Large Language Model, and maps each event to relevant banking products. Built with an interactive UI.
+A hybrid fraud detection pipeline on the **Elliptic Bitcoin transaction dataset** (203,769 nodes, 234,355 edges), built on the architecture NVIDIA recommends in its AI Blueprint for fraud detection.
 
-[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Shanmukhbysani/life-event-detector/blob/main/life_event_gradio.ipynb)
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/drive/1l8gdBJ81CaCfSWlf01BVbPujBtUbk29s?usp=sharing)
 
-> Click the badge to run the interactive app in your browser.
+> Click the badge above to run the entire pipeline in your browser — no setup required.
 
 ---
 
-## What it does
+## The idea
 
-Banks hold every customer's transaction history. Buried in those merchant names are **life events** the bank could support at the right moment — home insurance when you move, a Junior ISA when a baby arrives. This system surfaces those events automatically.
+A single model isn't enough for real-world fraud. This pipeline combines three components, each doing one job:
 
-**Flow:** transaction history → PII masking → structured LLM prompt → detected events with confidence, evidence, and product recommendations → interactive UI.
+| Component | Role | Why |
+|-----------|------|-----|
+| **GCN** (Graph Neural Network) | Feature factory | Reads the transaction graph and learns embeddings that capture network-level risk. Fraud rings are visible in graph structure, not in individual transactions. |
+| **XGBoost** | Decision maker | Takes GCN embeddings + original features and makes the final fraud / not-fraud call. Fast, accurate, explainable. |
+| **SHAP** | Auditor | Explains *why* each transaction was flagged — required for banking compliance. |
 
-## Why it matters for a bank
+## Architecture
 
-| Lloyds use case | How this project addresses it |
-|---|---|
-| **Detect customer life events from transactions** | Core output — detected events with the exact transactions that triggered them |
-| **Analyse transactions to surface financial needs** | Each event maps to recommended banking products |
+```
+Transaction Graph
+       │
+       ▼
+┌──────────────┐     node embeddings      ┌──────────────┐     prediction      ┌──────────┐
+│  GCN (2-layer)│ ───────────────────────▶ │   XGBoost    │ ──────────────────▶ │  Fraud?  │
+│ message passing│   + original features    │ (+ SMOTE)    │                     └──────────┘
+└──────────────┘                           └──────────────┘                          │
+                                                                                       ▼
+                                                                                ┌──────────┐
+                                                                                │   SHAP   │
+                                                                                │ why?     │
+                                                                                └──────────┘
+```
 
-## Data privacy (the key design decision)
+## Pipeline steps
 
-Sending real customer data to an external LLM API would breach banking regulation (data residency, GDPR). So:
+1. Load the Elliptic Bitcoin transaction graph
+2. Train a 2-layer GNN — **both GCN and GraphSAGE** — for node classification
+3. Extract each GNN's hidden-layer embeddings (network-level risk as numbers)
+4. Concatenate embeddings + original tabular features → 229-dim feature vector
+5. Balance the rare fraud class with SMOTE (training data only)
+6. Train XGBoost on the GNN-enhanced features
+7. **Ablation:** compare raw XGBoost vs GCN+XGBoost vs GraphSAGE+XGBoost to prove the GNN adds value
+8. **Threshold tuning** via the precision-recall curve (business cost trade-off)
+9. **SHAP** explanations for audit-ready compliance
+10. **Feature importance** split: original features vs GNN embeddings
+11. **Graph visualization** of a fraud node's 2-hop neighbourhood
 
-- **Prototype (this repo):** synthetic data + Groq cloud API, for demonstration only.
-- **Production:** the same prompt runs on a **self-hosted open-source LLM (Llama 3 / Mistral)** inside the bank's private cloud — no customer data ever leaves the bank. PII is masked before any inference.
+## Key design decisions
 
-## How hallucination is controlled
-
-- Low temperature (0.1) for consistent, factual output
-- A **closed list** of allowed life events — the model can't invent new ones
-- A hard rule: every detected event must **cite the transactions** that justify it
-- Forced JSON output via the API's structured-output mode
+- **Why hybrid?** GNN captures network patterns (mule accounts, fraud rings) that tabular models miss; XGBoost gives speed and explainability that a GNN classifier head lacks.
+- **Why the Elliptic dataset?** It's a *real* transaction graph — the academic benchmark for GNN fraud detection — not a tabular dataset forced into a graph.
+- **Why SMOTE on training data only?** Balancing the test set leaks information and inflates metrics.
+- **Why precision/recall over accuracy?** Fraud is ~10% of labelled data; accuracy is misleading on imbalanced problems.
 
 ## Tech stack
 
-`Python` · `Pandas` · `Groq API (Llama 3)` · `Gradio` · `Prompt Engineering`
+`PyTorch Geometric` · `XGBoost` · `SHAP` · `imbalanced-learn (SMOTE)` · `scikit-learn` · `Pandas`
 
 ## How to run
 
-**In Colab (easiest):**
-1. Click the Colab badge above (or upload `life_event_gradio.ipynb`)
-2. Run the single cell
-3. Paste your free Groq API key when prompted (get one at console.groq.com/keys)
-4. The interactive UI appears in the output — pick a customer and click **Analyse transactions**
+**Option 1 — Colab (recommended):** click the badge at the top to open the notebook. Set `Runtime → Change runtime type → GPU`, then `Runtime → Run all`.
 
-**Live, permanent demo (Hugging Face Spaces):**
-1. Create a free account at huggingface.co
-2. New Space → SDK: Gradio
-3. Add the app code as `app.py` and a `requirements.txt`
-4. In *Settings → Secrets*, add `GROQ_API_KEY`
-5. You get a permanent public URL — visitors use the app without needing their own key
+**Option 2 — Local:**
+```bash
+pip install torch-geometric xgboost shap imbalanced-learn scikit-learn pandas matplotlib seaborn
+jupyter notebook fraud_detection_gnn.ipynb
+```
 
-## Limitations
+## What's next
 
-- Real merchant strings are messier than synthetic ones — production needs a transaction-enrichment step first.
-- Model-estimated confidence isn't a calibrated probability; I'd validate it against labelled outcomes.
-
-## Author
-
-**Shanmukh Bysani** — B.E. AI & Data Science, CBIT Hyderabad
+- **FLAG (KDD 2025):** adds LLM-derived text features on top of the graph — deployed in Alipay's production credit-risk system.
+- **GraphSAGE:** for scalability to larger graphs in production.
+- **Temporal GNNs (TGN):** model how fraud patterns evolve over time, which a static GCN can't.
